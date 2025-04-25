@@ -1,0 +1,5 @@
+option('log',
+  type: 'string',
+  value: '/var/log/rpm-file-changes.log',
+  description: 'The log file path for RPM file changes'
+)

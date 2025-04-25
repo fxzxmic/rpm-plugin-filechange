@@ -1,0 +1,6 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define LOG_FILE "@log_path@"
+
+#endif /* CONFIG_H */

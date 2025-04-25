@@ -1,0 +1,47 @@
+name: Build RPM
+
+on:
+  - push
+  - pull_request
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        filter: "*.spec"
+
+    - name: Install Dependencies
+      run: dnf install -y dnf5-plugins rpmdevtools
+
+    - name: Modify Spec
+      if: github.ref_type != 'tag'
+      run: |
+        sed -i "s|https://github.com/fxzxmic/%{name}/archive/refs/tags/%{version}.tar.gz|https://github.com/fxzxmic/%{name}/archive/${{ github.ref }}.tar.gz|" *.spec
+        sed -i "s|%autosetup|%autosetup -n %{name}-${{ github.ref_name }}|" *.spec
+
+    - name: Build RPM
+      run: |
+        spectool --get-files --directory=SOURCES --all *.spec &&
+        dnf builddep -y *.spec &&
+        rpmbuild --define "_topdir ${GITHUB_WORKSPACE}" -ba *.spec
+
+    - name: Upload Artifact
+      if: github.ref_type != 'tag'
+      uses: actions/upload-artifact@v4
+      with:
+        name: rpm-package
+        path: RPMS/*/*
+
+    - name: Create Release
+      if: github.ref_type == 'tag'
+      uses: softprops/action-gh-release@v2
+      with:
+        files: RPMS/*/*

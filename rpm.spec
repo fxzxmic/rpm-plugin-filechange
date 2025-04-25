@@ -26,6 +26,8 @@ This plugin tracks file changes during RPM package upgrades and downgrades.
 %meson_install
 
 %files
+%license LICENSE
+%doc README.md
 %{__plugindir}/*
 %{_rpmmacrodir}/*
 

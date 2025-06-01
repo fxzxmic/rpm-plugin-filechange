@@ -1,6 +1,6 @@
 Name:           rpm-plugin-filechange
 Version:        1.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        RPM plugin for tracking file changes during package upgrades and downgrades
 
 License:        GPL-3.0-or-later
@@ -26,9 +26,14 @@ This plugin tracks file changes during RPM package upgrades and downgrades.
 %meson_install
 
 %files
+%license LICENSE
+%doc README.md
 %{__plugindir}/*
 %{_rpmmacrodir}/*
 
 %changelog
+* Sun Jun 01 2025 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 1.0-2
+- Packaging LICENSE and README
+
 * Fri Apr 25 2025 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 1.0-1
 - Initial version of the rpm-plugin-filechange

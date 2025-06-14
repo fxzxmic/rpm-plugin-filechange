@@ -1,6 +1,6 @@
 Name:           rpm-plugin-filechange
-Version:        1.0
-Release:        2%{?dist}
+Version:        1.1
+Release:        1%{?dist}
 Summary:        RPM plugin for tracking file changes during package upgrades and downgrades
 
 License:        GPL-3.0-or-later
@@ -32,6 +32,9 @@ This plugin tracks file changes during RPM package upgrades and downgrades.
 %{_rpmmacrodir}/*
 
 %changelog
+* Sat Jun 14 2025 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 1.1-1
+- Skip .build-id directory
+
 * Sun Jun 01 2025 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 1.0-2
 - Packaging LICENSE and README
 

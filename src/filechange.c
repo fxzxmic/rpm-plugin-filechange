@@ -14,13 +14,13 @@ typedef struct {
     char *evr;
 } FileSnapshot;
 
-static GHashTable *replacedPkgs = NULL; // key: pkg name (char*), value: FileSnapshot*
+static GHashTable *pkgs = NULL; // key: pkg name, value: FileSnapshot*
 
 static void free_snapshot(gpointer data) {
     FileSnapshot *snap = data;
     if (!snap) return;
-    g_hash_table_destroy(snap->files);
-    free(snap->evr);
+    if (snap->files) g_hash_table_destroy(snap->files);
+    if (snap->evr) free(snap->evr);
     free(snap);
 }
 
@@ -37,7 +37,9 @@ static FileSnapshot *create_snapshot(rpmts ts, const char *pkgname, const char *
 
     while (rpmfiNext(fi) != -1) {
         const char *fn = rpmfiFN(fi);
-        if (fn) g_hash_table_add(files, strdup(fn));
+        if (fn && strstr(fn, ".build-id") == NULL) {
+            g_hash_table_add(files, strdup(fn));
+        }
     }
 
     rpmfiFree(fi);
@@ -63,7 +65,7 @@ static gboolean is_replaced(rpmts ts, const char *pkgname) {
 }
 
 static rpmRC filechange_pre(rpmPlugin plugin, rpmts ts) {
-    replacedPkgs = g_hash_table_new_full(g_str_hash, g_str_equal, free, (GDestroyNotify)free_snapshot);
+    pkgs = g_hash_table_new_full(g_str_hash, g_str_equal, free, (GDestroyNotify)free_snapshot);
 
     rpmtsi tsi = rpmtsiInit(ts);
     rpmte te;
@@ -72,7 +74,7 @@ static rpmRC filechange_pre(rpmPlugin plugin, rpmts ts) {
         if (is_replaced(ts, pkgname)) {
             FileSnapshot *snap = create_snapshot(ts, pkgname, rpmteEVR(te));
             if (snap) {
-                g_hash_table_insert(replacedPkgs, strdup(pkgname), snap);
+                g_hash_table_insert(pkgs, strdup(pkgname), snap);
             }
         }
     }
@@ -126,7 +128,7 @@ static void log_file_changes(FILE *fp, const char *pkgname, FileSnapshot *old_sn
 }
 
 static rpmRC filechange_post(rpmPlugin plugin, rpmts ts, int res) {
-    if (!replacedPkgs) return RPMRC_OK;
+    if (!pkgs) return RPMRC_OK;
 
     FILE *fp = fopen(LOG_FILE, "a");
     if (!fp) return RPMRC_OK;
@@ -135,7 +137,7 @@ static rpmRC filechange_post(rpmPlugin plugin, rpmts ts, int res) {
     rpmte te;
     while ((te = rpmtsiNext(tsi, TR_ADDED)) != NULL) {
         const char *pkgname = rpmteN(te);
-        FileSnapshot *old_snap = g_hash_table_lookup(replacedPkgs, pkgname);
+        FileSnapshot *old_snap = g_hash_table_lookup(pkgs, pkgname);
         if (!old_snap) continue;
 
         FileSnapshot *new_snap = create_snapshot(ts, pkgname, rpmteEVR(te));
@@ -149,8 +151,8 @@ static rpmRC filechange_post(rpmPlugin plugin, rpmts ts, int res) {
     rpmtsiFree(tsi);
     fclose(fp);
 
-    g_hash_table_destroy(replacedPkgs);
-    replacedPkgs = NULL;
+    g_hash_table_destroy(pkgs);
+    pkgs = NULL;
     return RPMRC_OK;
 }
 

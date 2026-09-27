@@ -1,4 +1,4 @@
-project('rpm-plugin-filechange', 'c', version: '1.1')
+project('rpm-plugin-filechange', 'c', version: '2.0')
 short_name = 'filechange'
 
 rpm_dep = dependency('rpm', required: true)

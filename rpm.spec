@@ -1,5 +1,5 @@
 Name:           rpm-plugin-filechange
-Version:        1.1
+Version:        2.0
 Release:        1%{?dist}
 Summary:        RPM plugin for tracking file changes during package upgrades and downgrades
 
@@ -32,6 +32,10 @@ This plugin tracks file changes during RPM package upgrades and downgrades.
 %{_rpmmacrodir}/*
 
 %changelog
+* Mon Sep 28 2026 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 2.0-1
+- Make path exclusions and log location configurable through RPM macros
+- Update file change tracking for current RPM transaction interfaces
+
 * Sat Jun 14 2025 Fxzxmic <54622331+fxzxmic@users.noreply.github.com> - 1.1-1
 - Skip .build-id directory
 

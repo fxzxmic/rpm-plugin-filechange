@@ -3,3 +3,9 @@ option('log',
   value: '/var/log/rpm-file-changes.log',
   description: 'The log file path for RPM file changes'
 )
+
+option('exclude',
+  type: 'string',
+  value: '.build-id %{_target_cpu}/kernel',
+  description: 'Whitespace-separated path substrings excluded from the change log'
+)

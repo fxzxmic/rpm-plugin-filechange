@@ -16,22 +16,23 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
-        filter: "*.spec"
+        sparse-checkout: rpm.spec
+        sparse-checkout-cone-mode: false
 
     - name: Install Dependencies
-      run: dnf install -y dnf5-plugins rpmdevtools
+      run: dnf install -y rpmdevtools
 
     - name: Modify Spec
       if: github.ref_type != 'tag'
       run: |
-        sed -i "s|https://github.com/fxzxmic/%{name}/archive/refs/tags/%{version}.tar.gz|https://github.com/fxzxmic/%{name}/archive/${{ github.ref }}.tar.gz|" *.spec
-        sed -i "s|%autosetup|%autosetup -n %{name}-${{ github.ref_name }}|" *.spec
+        sed -i "s@/archive/refs/tags/%{version}.tar.gz@/archive/${GITHUB_SHA}.tar.gz@" rpm.spec
+        sed -i "s@^%autosetup\$@%autosetup -n %{name}-${GITHUB_SHA}@" rpm.spec
 
     - name: Build RPM
       run: |
-        spectool --get-files --directory=SOURCES --all *.spec &&
-        dnf builddep -y *.spec &&
-        rpmbuild --define "_topdir ${GITHUB_WORKSPACE}" -ba *.spec
+        spectool --get-files --directory=SOURCES --all rpm.spec
+        dnf builddep -y rpm.spec
+        rpmbuild --define "_topdir ${GITHUB_WORKSPACE}" -ba rpm.spec
 
     - name: Upload Artifact
       if: github.ref_type != 'tag'

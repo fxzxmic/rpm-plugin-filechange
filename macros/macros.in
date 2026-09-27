@@ -1,1 +1,3 @@
 %__transaction_@short_name@  %{__plugindir}/@short_name@.so
+%_filechange_exclude @exclude@
+%_filechange_log @log@

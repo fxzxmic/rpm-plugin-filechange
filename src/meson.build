@@ -1,13 +1,5 @@
 rpm_plugindir = rpm_dep.get_variable(pkgconfig: 'rpmplugindir')
 
-configure_file(
-    input: 'config.h.in',
-    output: 'config.h',
-    configuration : {
-        'log_path' : log_path,
-    }
-)
-
 shared_module(
   short_name,
   short_name + '.c',

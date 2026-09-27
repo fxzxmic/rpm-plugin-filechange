@@ -1,126 +1,178 @@
-#include <rpm/rpmplugin.h>
-#include <rpm/rpmts.h>
-#include <rpm/rpmdb.h>
-#include <rpm/header.h>
-#include <rpm/rpmfi.h>
 #include <glib.h>
-#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "config.h"
+#include <string.h>
+
+#include <rpm/header.h>
+#include <rpm/rpmdb.h>
+#include <rpm/rpmfi.h>
+#include <rpm/rpmfiles.h>
+#include <rpm/rpmmacro.h>
+#include <rpm/rpmplugin.h>
+#include <rpm/rpmtag.h>
+#include <rpm/rpmte.h>
+#include <rpm/rpmts.h>
 
 typedef struct {
-    GHashTable *files;  // key: file path string
-    char *evr;
-} FileSnapshot;
+    GHashTable *files;
+    rpmte te; // borrowed from the transaction
+} Snapshot;
 
-static GHashTable *pkgs = NULL; // key: pkg name, value: FileSnapshot*
+typedef struct {
+    GHashTable *old;
+    char **exclude;
+    char *log;
+} State;
 
-static void free_snapshot(gpointer data) {
-    FileSnapshot *snap = data;
-    if (!snap) return;
-    if (snap->files) g_hash_table_destroy(snap->files);
-    if (snap->evr) free(snap->evr);
-    free(snap);
+static void snapshot_free(gpointer data) {
+    Snapshot *snapshot = data;
+    g_hash_table_destroy(snapshot->files);
+    g_free(snapshot);
 }
 
-static FileSnapshot *create_snapshot(rpmts ts, const char *pkgname, const char *evr) {
-    rpmdbMatchIterator mi = rpmdbInitIterator(rpmtsGetRdb(ts), RPMDBI_NAME, pkgname, 0);
-    Header hdr = rpmdbNextIterator(mi);
-    if (!hdr) {
-        rpmdbFreeIterator(mi);
-        return NULL;
-    }
-
-    rpmfi fi = rpmfiNew(NULL, hdr, RPMTAG_BASENAMES, RPMFI_ITER_FWD);
-    GHashTable *files = g_hash_table_new_full(g_str_hash, g_str_equal, free, NULL);
-
-    while (rpmfiNext(fi) != -1) {
-        const char *fn = rpmfiFN(fi);
-        if (fn && strstr(fn, ".build-id") == NULL) {
-            g_hash_table_add(files, strdup(fn));
-        }
-    }
-
-    rpmfiFree(fi);
-    rpmdbFreeIterator(mi);
-
-    FileSnapshot *snap = malloc(sizeof(FileSnapshot));
-    snap->files = files;
-    snap->evr = strdup(evr);
-    return snap;
-}
-
-static gboolean is_replaced(rpmts ts, const char *pkgname) {
-    rpmtsi tsi = rpmtsiInit(ts);
-    rpmte te;
-    while ((te = rpmtsiNext(tsi, TR_ADDED)) != NULL) {
-        if (strcmp(pkgname, rpmteN(te)) == 0) {
-            rpmtsiFree(tsi);
+static gboolean is_excluded(const char *path, char *const *exclude) {
+    for (char *const *keyword = exclude; keyword && *keyword; keyword++) {
+        if (**keyword && strstr(path, *keyword)) {
             return TRUE;
         }
     }
-    rpmtsiFree(tsi);
     return FALSE;
 }
 
+static Snapshot *snapshot_from_iterator(rpmfi fi, rpmte te,
+                                        char *const *exclude) {
+    Snapshot *snapshot = g_new0(Snapshot, 1);
+    snapshot->files = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    snapshot->te = te;
+
+    while (rpmfiNext(fi) >= 0) {
+        const char *path = rpmfiFN(fi);
+        if (path && !is_excluded(path, exclude)) {
+            g_hash_table_add(snapshot->files, g_strdup(path));
+        }
+    }
+
+    return snapshot;
+}
+
+static Snapshot *snapshot_from_element(rpmte te, char *const *exclude) {
+    rpmfiles files = rpmteFiles(te);
+    if (!files) {
+        return NULL;
+    }
+
+    rpmfi fi = rpmfilesIter(files, RPMFI_ITER_FWD);
+    if (!fi) {
+        rpmfilesFree(files);
+        return NULL;
+    }
+
+    Snapshot *snapshot = snapshot_from_iterator(fi, te, exclude);
+    rpmfiFree(fi);
+    rpmfilesFree(files);
+    return snapshot;
+}
+
+static Snapshot *snapshot_from_db(rpmts ts, rpmte te, char *const *exclude) {
+    unsigned int instance = rpmteDBInstance(te);
+    if (!instance) {
+        return NULL;
+    }
+
+    rpmdbMatchIterator mi = rpmtsInitIterator(ts, RPMDBI_PACKAGES,
+                                              &instance, sizeof(instance));
+    if (!mi) {
+        return NULL;
+    }
+
+    Header header = rpmdbNextIterator(mi);
+    Snapshot *snapshot = NULL;
+    if (header) {
+        rpmfi fi = rpmfiNew(ts, header, RPMTAG_BASENAMES, 0);
+        if (fi) {
+            snapshot = snapshot_from_iterator(fi, te, exclude);
+            rpmfiFree(fi);
+        }
+    }
+    rpmdbFreeIterator(mi);
+    return snapshot;
+}
+
 static rpmRC filechange_pre(rpmPlugin plugin, rpmts ts) {
-    pkgs = g_hash_table_new_full(g_str_hash, g_str_equal, free, (GDestroyNotify)free_snapshot);
+    State *state = g_new0(State, 1);
+    state->old = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
+                                       (GDestroyNotify)g_ptr_array_unref);
+
+    char *expanded = rpmExpand("%{?_filechange_exclude}", NULL);
+    state->exclude = g_strsplit_set(expanded ? expanded : "", " \t\r\n", -1);
+    free(expanded);
+    state->log = rpmExpand("%{?_filechange_log}", NULL);
+
+    rpmPluginSetData(plugin, state);
 
     rpmtsi tsi = rpmtsiInit(ts);
     rpmte te;
     while ((te = rpmtsiNext(tsi, TR_REMOVED)) != NULL) {
-        const char *pkgname = rpmteN(te);
-        if (is_replaced(ts, pkgname)) {
-            FileSnapshot *snap = create_snapshot(ts, pkgname, rpmteEVR(te));
-            if (snap) {
-                g_hash_table_insert(pkgs, strdup(pkgname), snap);
+        rpmte added = rpmteDependsOn(te);
+        if (!added || strcmp(rpmteN(te), rpmteN(added)) != 0) {
+            continue;
+        }
+
+        Snapshot *snapshot = snapshot_from_element(te, state->exclude);
+        if (snapshot) {
+            GPtrArray *old = g_hash_table_lookup(state->old, added);
+            if (!old) {
+                old = g_ptr_array_new_with_free_func(snapshot_free);
+                g_hash_table_insert(state->old, added, old);
             }
+            g_ptr_array_add(old, snapshot);
         }
     }
     rpmtsiFree(tsi);
     return RPMRC_OK;
 }
 
-static void log_file_changes(FILE *fp, const char *pkgname, FileSnapshot *old_snap, FileSnapshot *new_snap) {
-    GPtrArray *added = g_ptr_array_new_with_free_func(free);
-    GPtrArray *removed = g_ptr_array_new_with_free_func(free);
-
+static GPtrArray *changed_paths(GHashTable *left, GHashTable *right) {
+    GPtrArray *paths = g_ptr_array_new();
     GHashTableIter iter;
-    gpointer key;
-
-    // Collect added files
-    g_hash_table_iter_init(&iter, new_snap->files);
-    while (g_hash_table_iter_next(&iter, &key, NULL)) {
-        if (!g_hash_table_contains(old_snap->files, key)) {
-            g_ptr_array_add(added, strdup((char *)key));
+    gpointer path;
+    g_hash_table_iter_init(&iter, left);
+    while (g_hash_table_iter_next(&iter, &path, NULL)) {
+        if (!g_hash_table_contains(right, path)) {
+            g_ptr_array_add(paths, path);
         }
     }
+    return paths;
+}
 
-    // Collect removed files
-    g_hash_table_iter_init(&iter, old_snap->files);
-    while (g_hash_table_iter_next(&iter, &key, NULL)) {
-        if (!g_hash_table_contains(new_snap->files, key)) {
-            g_ptr_array_add(removed, strdup((char *)key));
-        }
+static gint compare_strings(gconstpointer a, gconstpointer b) {
+    return g_strcmp0(*(char * const *)a, *(char * const *)b);
+}
+
+static void log_paths(FILE *fp, const char *label, const GPtrArray *paths) {
+    if (paths->len == 0) {
+        return;
     }
 
-    // Log changes
+    fprintf(fp, "  %s %u file(s):\n", label, paths->len);
+    for (guint i = 0; i < paths->len; i++) {
+        fprintf(fp, "    %s\n", (char *)g_ptr_array_index(paths, i));
+    }
+}
+
+static void log_changes(FILE *fp, const char *name,
+                        const Snapshot *old, const Snapshot *new) {
+    GPtrArray *added = changed_paths(new->files, old->files);
+    GPtrArray *removed = changed_paths(old->files, new->files);
+    g_ptr_array_sort(added, compare_strings);
+    g_ptr_array_sort(removed, compare_strings);
+
     if (added->len || removed->len) {
-        fprintf(fp, "Package %s: %s → %s\n", pkgname, old_snap->evr, new_snap->evr);
-        if (added->len) {
-            fprintf(fp, "  Added %d file(s):\n", added->len);
-            for (guint i = 0; i < added->len; i++) {
-                fprintf(fp, "    %s\n", (char *)g_ptr_array_index(added, i));
-            }
-        }
-        if (removed->len) {
-            fprintf(fp, "  Removed %d file(s):\n", removed->len);
-            for (guint i = 0; i < removed->len; i++) {
-                fprintf(fp, "    %s\n", (char *)g_ptr_array_index(removed, i));
-            }
-        }
-        fprintf(fp, "\n");
+        fprintf(fp, "Package %s: %s → %s\n", name,
+                rpmteEVR(old->te), rpmteEVR(new->te));
+        log_paths(fp, "Added", added);
+        log_paths(fp, "Removed", removed);
+        fputc('\n', fp);
     }
 
     g_ptr_array_free(added, TRUE);
@@ -128,31 +180,44 @@ static void log_file_changes(FILE *fp, const char *pkgname, FileSnapshot *old_sn
 }
 
 static rpmRC filechange_post(rpmPlugin plugin, rpmts ts, int res) {
-    if (!pkgs) return RPMRC_OK;
+    (void)res;
+    State *state = rpmPluginGetData(plugin);
+    if (state->log && *state->log && g_hash_table_size(state->old) > 0) {
+        FILE *fp = fopen(state->log, "a");
+        if (fp) {
+            rpmtsi tsi = rpmtsiInit(ts);
+            rpmte te;
+            while ((te = rpmtsiNext(tsi, TR_ADDED)) != NULL) {
+                if (rpmteFailed(te)) {
+                    continue;
+                }
 
-    FILE *fp = fopen(LOG_FILE, "a");
-    if (!fp) return RPMRC_OK;
+                GPtrArray *old = g_hash_table_lookup(state->old, te);
+                if (!old) {
+                    continue;
+                }
 
-    rpmtsi tsi = rpmtsiInit(ts);
-    rpmte te;
-    while ((te = rpmtsiNext(tsi, TR_ADDED)) != NULL) {
-        const char *pkgname = rpmteN(te);
-        FileSnapshot *old_snap = g_hash_table_lookup(pkgs, pkgname);
-        if (!old_snap) continue;
-
-        FileSnapshot *new_snap = create_snapshot(ts, pkgname, rpmteEVR(te));
-        if (!new_snap) continue;
-
-        log_file_changes(fp, pkgname, old_snap, new_snap);
-
-        free_snapshot(new_snap);
+                Snapshot *new = snapshot_from_db(ts, te, state->exclude);
+                if (new) {
+                    for (guint i = 0; i < old->len; i++) {
+                        Snapshot *previous = g_ptr_array_index(old, i);
+                        if (!rpmteFailed(previous->te)) {
+                            log_changes(fp, rpmteN(te), previous, new);
+                        }
+                    }
+                    snapshot_free(new);
+                }
+            }
+            rpmtsiFree(tsi);
+            fclose(fp);
+        }
     }
 
-    rpmtsiFree(tsi);
-    fclose(fp);
-
-    g_hash_table_destroy(pkgs);
-    pkgs = NULL;
+    g_hash_table_destroy(state->old);
+    g_strfreev(state->exclude);
+    free(state->log);
+    g_free(state);
+    rpmPluginSetData(plugin, NULL);
     return RPMRC_OK;
 }
 
